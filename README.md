@@ -210,5 +210,5 @@ Q-learning is executed for a number of episodes. In each episode, the agent perf
        width="800">
 </video> -->
 
- <video src="https://raw.githubusercontent.com/PedroTrujilloV/ReinforcementLearningQLearningTwoGridworldAgent/main/videos/train.mp4"  controls></video>
+ <video src="https://github.com/user-attachments/assets/d0993fc7-47bb-42af-b83a-b9c98c23502d"  controls></video>
 
