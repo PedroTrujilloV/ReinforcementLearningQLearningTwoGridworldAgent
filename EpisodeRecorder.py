@@ -7,6 +7,9 @@ from EnvironmentProperties import Color
 from EnvironmentProperties import DoorState                   
 import numpy as np
 import os
+import warnings
+warnings.filterwarnings("ignore", message=".*probesize.*")
+
 
 try:
     import cv2  
@@ -79,7 +82,8 @@ class EpisodeRecorder:
 
     def start(self) -> None:
         """Call once after env.reset() — captures the initial frame."""
-        self.writer = imageio.get_writer( self.path, fps=self.fps, macro_block_size=1,  quality=8 )
+        self.writer = imageio.get_writer( self.path, fps=self.fps, macro_block_size=1,  quality=8, 
+                                          format="ffmpeg", codec="libx264", ffmpeg_params=["-r", str(self.fps)])
         frame = self._make_frame(step_n=0, reward=0.0, total_reward=0.0, done=False)
         self.writer.append_data(frame)
 
@@ -224,296 +228,541 @@ class EpisodeRecorder:
         return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
 
-"""
-EpisodeRecorder — sprite-based version.
-Tiles are extracted at runtime from the reference image supplied at construction.
-No external sprite sheet required; works for any board dimensions and object config.
-
-Usage
------
-recorder = EpisodeRecorderWithSprites(
-    path        = "videos/run.mp4",
-    env         = env,
-    sprite_path = "assets/proyect_agent_env_image.png",
-    fps         = 4,
-    cell_px     = 80,
-)
-env.reset()
-recorder.start()
-while not done:
-    next_state, reward, done, info = env.step(action)
-    total_reward += reward
-    step_n       += 1
-    recorder.capture(step_n, reward, total_reward, done)
-recorder.save()
-"""
-
-import os
-import numpy as np
-from PIL import Image, ImageDraw
 
 
-class EpisodeRecorderWithSprites:
+
+####################
+
+import json
+
+
+class SpriteEpisodeRecorder(EpisodeRecorder):
     """
-    Records an RL episode as an MP4 video using sprite tiles extracted
-    from a reference dungeon image.  The three-method API (start / capture / save)
-    plugs directly into any external training or evaluation loop.
+    Renders environment frames using pixel-art sprites instead of plain
+    OpenCV geometric shapes.  All recording mechanics (start / capture /
+    save) are inherited unchanged from EpisodeRecorder.
 
     Parameters
     ----------
-    path        : output MP4 file path
-    env         : TwoRoomMDP instance (read-only during recording)
-    sprite_path : path to the reference dungeon image
-    fps         : frames per second
-    cell_px     : pixel size of each grid cell in the output video
+    path : str
+        Output MP4 path.
+    env : object
+        The grid environment.
+    sprite_sheet_path : str
+        Filesystem path to the sprite sheet PNG (BGRA or convertible).
+    sprite_json : str | dict
+        Path to the JSON produced by the sprite packer, or the already-
+        parsed dict.
+    fps : int
+        Frames per second (default 4).
+    cell_px : int
+        Pixel size of one grid cell.  Sprites are NOT forced to this size;
+        it only drives layout geometry.  Defaults to 99.
+    padding : int
+        Pixel padding around the grid canvas (default 10).
+    verbose : bool
+        Print save path when done (default True).
     """
-
-    # ── Sprite crop regions (x1, y1, x2, y2) in the 2172×724 reference image ──
-    _CROP_REGIONS = {
-        "floor":        ( 600,  480,  900,  700),
-        "floor_right":  (1300,  500, 1700,  700),
-        "wall_top":     ( 500,    2,  800,   95),
-        "wall_side":    (   3,  300,   90,  550),
-        "agent":        ( 455,  295,  600,  478),
-        "key":          ( 265,  200,  415,  312),
-        "ball":         ( 735,  295,  935,  468),
-        "door_locked":  (1018,  345, 1155,  510),
-        "door_wall":    (1025,  155, 1155,  340),
-        "door_open":    (1025,  155, 1155,  340),   # same column, tinted green in _tint()
-        "door_unblocked":(1018, 345, 1155,  510),   # same as locked, tinted orange
-        "exit":         (1775,   95, 2065,  445),
-    }
-
-    # ── sprites.png  (1536 × 1024) ───────────────────────────────────────────────
-    # Coordinates verified pixel-by-pixel via brightness scan.
-    # Background is pure black so any black padding disappears on the floor tile.
-    
-    _CROP_REGIONS = {
-        "floor":          ( 222,  758,  436,  988),   # floor_mid tile
-        "floor_right":    (  12,  758,  210,  988),   # floor_sandy tile
-        "wall_top":       ( 242,  296,  652,  488),   # sandy brick — top/bottom border
-        "wall_side":      (   8,  292,  222,  488),   # ivy stone   — left/right border
-        "agent":          ( 148,  540,  302,  718),   # robot agent
-        "key":            ( 330,  546,  462,  664),   # golden key
-        "ball":           ( 476,  516,  650,  714),   # red ball
-        "door_locked":    ( 791,  510,  926,  714),   # blue safe locked
-        "door_wall":      ( 668,  294, 1058,  488),   # dark stone wall — divider column
-        "door_open":      (1341,  510, 1490,  714),   # green glowing open
-        "door_unblocked": ( 969,  510, 1117,  714),   # blue safe unlocked
-        "exit":           ( 668,    8, 1528,  272),   # glowing arch — GOAL
-        # ── new keys from sprites.png ────────────────────────────────────────
-        "arch_locked":    ( 680,  742,  886, 1008),   # stone arch + blue door
-        "arch_unblocked": ( 896,  742, 1104, 1008),   # stone arch + orange glow
-        "arch_open":      (1114,  742, 1332, 1008),   # stone arch + green open
-        "exit_closed":    (  28,   10,  638,  272),   # dark arch — START background
-    }
-
-    # HUD colours (RGB)
-    _HUD_BG      = (30,  30,  30)
-    _HUD_TEXT    = (240, 240, 240)
-    _REWARD_POS  = (60,  200,  60)
-    _REWARD_NEG  = (220,  60,  60)
 
     def __init__(
         self,
-        path:        str,
+        path: str,
         env,
-        sprite_path: str,
-        fps:         int = 4,
-        cell_px:     int = 80,
+        sprite_sheet_path: str,
+        sprite_json,            # str (file path) OR dict
+        fps: int = 4,
+        cell_px: int = 99,
+        padding: int = 10,
+        verbose: bool = True,
     ):
-        try:
-            import imageio          # noqa: F401  (checked early, used in save())
-        except ImportError:
-            raise ImportError("Install with: pip install imageio imageio-ffmpeg")
+        super().__init__(path, env, fps=fps, cell_px=cell_px,
+                         padding=padding, verbose=verbose)
 
-        self.path    = path
-        self.env     = env
-        self.fps     = fps
-        self.cell_px = cell_px
-        self.frames  = []
+        # ── Load JSON ─────────────────────────────────────────────────────
+        if isinstance(sprite_json, str):
+            with open(sprite_json, "r") as fh:
+                sprite_json = json.load(fh)
 
-        self._sprites = self._load_sprites(sprite_path, cell_px)
+        # ── Load sprite sheet as BGRA ──────────────────────────────────────
+        sheet = cv2.imread(sprite_sheet_path, cv2.IMREAD_UNCHANGED)
+        if sheet is None:
+            raise FileNotFoundError(f"Sprite sheet not found: {sprite_sheet_path}")
+        if sheet.ndim == 2:
+            sheet = cv2.cvtColor(sheet, cv2.COLOR_GRAY2BGRA)
+        elif sheet.shape[2] == 3:
+            sheet = cv2.cvtColor(sheet, cv2.COLOR_BGR2BGRA)
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Public API
-    # ─────────────────────────────────────────────────────────────────────────
+        self._sprites: dict[str, np.ndarray] = {}
+        self._load_sprites(sheet, sprite_json)
 
-    def start(self) -> None:
-        """Call once immediately after env.reset() — captures the initial frame."""
-        self.frames = [self._make_frame(step_n=0, reward=0.0, total_reward=0.0, done=False)]
+    # ──────────────────────────────────────────────────────────────────────
+    # Sprite loading  — keeps native resolution, NO forced resize
+    # ──────────────────────────────────────────────────────────────────────
 
-    def capture(self, step_n: int, reward: float, total_reward: float, done: bool) -> None:
-        """Call once per step, after env.step(), to capture that frame."""
-        self.frames.append(self._make_frame(step_n, reward, total_reward, done))
+    def _load_sprites(self, sheet: np.ndarray, data: dict) -> None:
+        """Crop each sprite from the sheet at its native size."""
+        for s in data["sprites"]:
+            name = s["fileName"]
+            if name.endswith(".png"):
+                name = name[:-4]
+            x, y, w, h = s["x"], s["y"], s["width"], s["height"]
+            self._sprites[name] = sheet[y : y + h, x : x + w].copy()
 
-    def save(self) -> str:
+    # ──────────────────────────────────────────────────────────────────────
+    # Fallback tile
+    # ──────────────────────────────────────────────────────────────────────
+
+    def _missing_tile(self) -> np.ndarray:
+        """Bright-magenta BGRA tile so missing sprites are obvious."""
+        px   = self.cell_px
+        tile = np.zeros((px, px, 4), dtype=np.uint8)
+        tile[:, :, 0] = 255   # B
+        tile[:, :, 2] = 255   # R  ->  magenta
+        tile[:, :, 3] = 255   # fully opaque
+        return tile
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Sprite retrieval with flip support
+    # ──────────────────────────────────────────────────────────────────────
+
+    def _sprite(self, name: str, flip: bool = False) -> np.ndarray:
         """
-        Writes all captured frames to MP4 and returns the absolute path.
-        Call once after the episode loop ends.
+        Return the named BGRA sprite (or a magenta fallback).
+        When *flip* is True the image is mirrored horizontally — used for
+        wall corners / edges that share a single source tile.
         """
-        import imageio
+        spr = self._sprites.get(name)
+        if spr is None:
+            return self._missing_tile()
+        if flip:
+            spr = cv2.flip(spr, 1)
+        return spr
 
-        if not self.frames:
-            raise RuntimeError("No frames to save. Did you call start() and capture()?")
+    # ──────────────────────────────────────────────────────────────────────
+    # Alpha composite blit onto a 3-channel BGR canvas
+    # ──────────────────────────────────────────────────────────────────────
 
-        # Hold final frame for 2 extra seconds so the viewer can read it
-        for _ in range(self.fps * 2):
-            self.frames.append(self.frames[-1]) 
-
-        os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
-
-        # Convert PIL Images → numpy arrays for imageio
-        np_frames = [np.array(f) for f in self.frames]
-        imageio.mimwrite(self.path, np_frames, fps=self.fps, macro_block_size=1, quality=8)
-
-        abs_path = os.path.abspath(self.path)
-        print(f"[EpisodeRecorder] {len(self.frames)} frames → {abs_path}")
-        self.frames.clear()   # ← free after write
-        return abs_path
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # Sprite loading
-    # ─────────────────────────────────────────────────────────────────────────
-
-    
-    def _load_sprites(self, sprite_path: str, cell_px: int) -> dict:
+    def _blit(self, canvas: np.ndarray, sprite: np.ndarray, x: int, y: int) -> None:
         """
-        Crops each named region from the reference image and resizes to cell_px².
-        Also synthesises door_open and door_unblocked by colour-tinting the base crops.
+        Alpha-composite a BGRA *sprite* onto the BGR *canvas* at pixel (x, y).
+        Oversized sprites are clipped gracefully to canvas bounds.
         """
-        ref = Image.open(sprite_path).convert("RGB")
-        size = (cell_px, cell_px)
-        sprites = {}
-        for name, region in self._CROP_REGIONS.items():
-            sprites[name] = ref.crop(region).resize(size, Image.LANCZOS)
+        sh, sw = sprite.shape[:2]
+        ch, cw = canvas.shape[:2]
 
-        # Tint door states so they're visually distinct
-        sprites["door_unblocked"] = self._tint(sprites["door_unblocked"], (255, 160, 60),  alpha=0.35)
-        sprites["door_open"]      = self._tint(sprites["door_open"],      (60,  220, 100), alpha=0.45)
+        # Visible region in canvas space
+        x0c = max(x, 0);   y0c = max(y, 0)
+        x1c = min(x + sw, cw);  y1c = min(y + sh, ch)
+        if x0c >= x1c or y0c >= y1c:
+            return
 
-        return sprites
+        # Corresponding region in sprite space
+        x0s = x0c - x;  y0s = y0c - y
+        x1s = x0s + (x1c - x0c);  y1s = y0s + (y1c - y0c)
 
-    @staticmethod
-    def _tint(image: Image.Image, rgb: tuple, alpha: float) -> Image.Image:
-        """Overlay a solid colour at `alpha` opacity onto `image`."""
-        overlay = Image.new("RGB", image.size, rgb)
-        return Image.blend(image, overlay, alpha)
+        src  = sprite[y0s:y1s, x0s:x1s]
+        dst  = canvas[y0c:y1c, x0c:x1c].astype(np.float32)
+        a    = src[:, :, 3:4].astype(np.float32) / 255.0
+        bgr  = src[:, :, :3].astype(np.float32)
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Frame rendering
-    # ─────────────────────────────────────────────────────────────────────────
+        canvas[y0c:y1c, x0c:x1c] = (bgr * a + dst * (1.0 - a)).astype(np.uint8)
 
-    def _make_frame(self, step_n: int, reward: float,
-                    total_reward: float, done: bool) -> Image.Image:
-        env     = self.env
-        S       = self._sprites
-        px      = self.cell_px
-        nrows   = env.nrows
-        ncols   = env.ncols
-        HUD_H   = 60
-        W       = ncols * px
-        H       = nrows * px
+    # ──────────────────────────────────────────────────────────────────────
+    # Anchor offset  — centres oversized sprites on the cell
+    # ──────────────────────────────────────────────────────────────────────
 
-        canvas = Image.new("RGB", (W, H + HUD_H))
-        draw   = ImageDraw.Draw(canvas)
+    def _anchor_offset(self, sprite_name: str, sprite: np.ndarray, flip: bool = False) -> tuple[int, int]:
+        """
+        Return (dx, dy) so the sprite aligns correctly to its cell.
 
-        # ── Identify structural positions ─────────────────────────────────
-        door_color = env.door_color
-        door       = env.doors[door_color]
-        door_pos   = door["pos"]       # (row, col)
-        door_state = door["door_state"]
-        door_col   = door_pos[1]
-        goal_pos   = env.end_state_pos
-        start_pos  = env.initial_state
+        * Wall sprites that are taller than cell_px extend *upward*   -> negative dy.
+        * Side-edge sprites that are wider than cell_px are centred   -> negative dx.
+        * All other sprites (floor, objects, agent …) centre on cell  -> (0, 0).
 
-        # Object positions from env
-        key_positions  = set()
-        ball_positions = set()
-        for pos, items in env.objects.items():
-            for item in items:
-                if item["type"] == CellType.KEY:
-                    key_positions.add(pos)
-                elif item["type"] == CellType.BALL:
-                    ball_positions.add(pos)
+        The sprite itself is passed in so we never key-look-up twice.
+        """
+        px    = self.cell_px
+        h, w  = sprite.shape[:2]
+        dx, dy = 0, 0
 
-        # ── Layer 1: floor + walls ────────────────────────────────────────
+        if "top" in sprite_name: #or "corner" in sprite_name:# or "edge" in sprite_name:
+            if h > px:
+                dy = px - h          # shift sprite upward by the overflow
+
+        # if "side" in sprite_name:
+        #     if w > px:
+        #         dx = (px - w) // 2   # centre horizontally
+        if "side_edge" in sprite_name  or "top" in sprite_name or "bottom" in sprite_name:
+            if w > px:
+                #dx = px - w  # shift left so RIGHT edge aligns to cell boundary
+                dx = 0 if flip else px - w
+                
+
+        return dx, dy
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Helper: blit a named sprite with automatic anchor correction
+    # ──────────────────────────────────────────────────────────────────────
+
+    def _blit_at(self, canvas: np.ndarray, sprite_name: str, x: int, y: int,
+                 flip: bool = False) -> None:
+        """Retrieve sprite, compute anchor offset, then blit."""
+        spr     = self._sprite(sprite_name, flip=flip)
+        dx, dy  = self._anchor_offset(sprite_name, spr, flip)
+        self._blit(canvas, spr, x + dx, y + dy)
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Key colour mapping
+    # ──────────────────────────────────────────────────────────────────────
+
+    _KEY_COLOUR_MAP: dict[str, str] = {
+        "BLUE":   "key_blue",
+        "GREEN":  "key_green",
+        "RED":    "key_red",
+        "YELLOW": "key_yellow",
+    }
+
+    def _key_sprite_name(self, color) -> str:
+        return self._KEY_COLOUR_MAP.get(color.name.upper(), "key_blue")
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Wall-tile contextual selection
+    # ──────────────────────────────────────────────────────────────────────
+
+    def _wall_sprite_name_and_flip(self, env, i: int, j: int) -> tuple[str, bool]:
+        """
+        Choose the most contextually appropriate wall-sprite name for (i, j)
+        and whether to flip it horizontally.
+
+        Convention (row index grows downward):
+            N = (i-1, j)  — upper neighbour on screen
+            S = (i+1, j)  — lower neighbour on screen
+            W = (i,   j-1)
+            E = (i,   j+1)
+        """
+        nrows, ncols = env.nrows, env.ncols
+        cell_type = env.grid[i][j]
+
+        def is_floor(r: int, c: int) -> bool:
+            if r < 0 or r >= nrows or c < 0 or c >= ncols:
+                return False
+            return True 
+            # return env.grid[r][c] != CellType.WALL.code
+
+        N = is_floor(i - 1, j)
+        S = is_floor(i + 1, j)
+        W = is_floor(i, j - 1)
+        E = is_floor(i, j + 1)
+
+        if S and E and N and W:
+            if cell_type == CellType.WALL.code:
+                return "cell_middle_wall", False
+            elif cell_type == CellType.DOOR_LOCKED.code:
+                return "cell_middle_wall", False
+            elif cell_type == CellType.DOOR_OPEN.code:
+                return "cell_middle_wall", False
+            else:
+                return "cell", False # Default Cell 
+                
+        # ── Corners (check before straights) ──────────────────────────────
+        # Top-left corner of a room: open floor to south and east
+        elif S and E and not N and not W:
+            return "cell_top_corner", False        # native orientation
+
+        # Top-right corner: open floor to south and west  -> mirror
+        elif S and W and not N and not E:
+            return "cell_top_corner", True
+
+        # Bottom-left corner: open floor to north and east
+        elif N and E and not S and not W:
+            return "cell_bottom_corner", False
+
+        # Bottom-right corner: open floor to north and west  -> mirror
+        elif N and W and not S and not E:
+            return "cell_bottom_corner", True
+
+        # ── Corridors / fully enclosed ────────────────────────────────────
+        elif S and W and E and not N:
+            if cell_type != CellType.WALL.code:
+                return "cell_top_edge", False
+            else:
+                return "cell_top_wall", False
+
+        elif N and W and E and not S:
+            if cell_type != CellType.WALL.code:
+                return "cell_bottom_edge", False
+            else:
+                return "cell_bottom_wall", False
+        
+        elif N and S and W and not E:
+            # Left side-edge: open floor is to the EAST (right) -> mirror
+            return "cell_side_edge", True
+
+        elif N and S and E and not W:
+            # Right side-edge: open floor is to the WEST (left) 
+            return "cell_side_edge", False
+
+        return "cell", False # Default Cell 
+
+       
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Frame rendering  (overrides EpisodeRecorder._make_frame)
+    # ──────────────────────────────────────────────────────────────────────
+
+    def _make_frame(
+        self,
+        step_n: int,
+        reward: float,
+        total_reward: float,
+        done: bool,
+    ) -> np.ndarray:
+        cv2_   = self._cv2
+        env    = self.env
+        px     = self.cell_px
+        pad    = self.padding
+        FONT   = cv2_.FONT_HERSHEY_SIMPLEX
+        HUD_H  = 56
+        nrows, ncols = env.nrows, env.ncols
+
+        W = ncols * px + 2 * pad
+        H = nrows * px + 2 * pad + HUD_H
+
+        # H.264/yuv420p requires even dimensions
+        W = (W + 1) & ~1
+        H = (H + 1) & ~1
+
+        # Black background (sprites composite against it cleanly)
+        canvas = np.zeros((H, W, 3), dtype=np.uint8)
+
+        def top_left(i: int, j: int) -> tuple[int, int]:
+            return pad + j * px, pad + i * px
+
+
+        # ── 1. Floor and wall tiles ────────────────────────────────────────
         for i in range(nrows):
             for j in range(ncols):
-                x, y = j * px, i * px
-                pos  = (i, j)
+                x, y = top_left(i, j)
+                name, flip = self._wall_sprite_name_and_flip(env, i, j)
+                self._blit_at(canvas, name, x, y, flip=flip)
 
-                # Wall cell
-                if env.grid[i][j] == CellType.WALL.code:
-                    if i == 0 or i == nrows - 1:
-                        tile = S["wall_top"]
-                    else:
-                        tile = S["wall_side"]
-                    canvas.paste(tile, (x, y))
-                    continue
+        # ── 2. Goal / exit cell ────────────────────────────────────────────
+        ei, ej = env.end_state_pos
+        x, y = top_left(ei, ej)
+        self._blit_at(canvas, "exit", x, y)
 
-                # Divider column (door column walls above/below the door)
-                if j == door_col and pos != door_pos:
-                    canvas.paste(S["door_wall"], (x, y))
-                    continue
+        # ── 3. Doors ──────────────────────────────────────────────────────
+        for _, door in env.doors.items():
+            di, dj = door["pos"]
+            x, y   = top_left(di, dj)
+            ds     = door["door_state"]
 
-                # Floor: right room has a warmer tone
-                floor_tile = S["floor_right"] if j > door_col else S["floor"]
-                canvas.paste(floor_tile, (x, y))
+            # Floor base under the door so it composites cleanly
+            self._blit_at(canvas, "cell_middle_wall", x, y)
 
-        # ── Layer 2: door ─────────────────────────────────────────────────
-        dr, dc = door_pos
-        dx, dy = dc * px, dr * px
-        door_sprite_key = {
-            DoorState.LOCKED:    "door_locked",
-            DoorState.UNBLOCKED: "door_unblocked",
-            DoorState.OPEN:      "door_open",
-        }.get(door_state, "door_locked")
-        canvas.paste(S[door_sprite_key], (dx, dy))
+            spr_name = "door_open" if ds == DoorState.OPEN else "door"
+            self._blit_at(canvas, spr_name, x, y)
 
-        # ── Layer 3: goal (exit arch) ─────────────────────────────────────
-        gr, gc = goal_pos
-        canvas.paste(S["exit"], (gc * px, gr * px))
+            # Text badge: L = Locked, U = Unblocked
+            if ds != DoorState.OPEN:
+                label = "L" if ds == DoorState.LOCKED else "U"
+                cv2_.putText(
+                    canvas, label,
+                    (x + px // 2 - 7, y + px // 2 + 8),
+                    FONT, 0.55, (255, 255, 255), 2, cv2_.LINE_AA,
+                )
 
-        # ── Layer 4: items (key / ball) ───────────────────────────────────
-        for pos in key_positions:
-            canvas.paste(S["key"], (pos[1] * px, pos[0] * px))
-        for pos in ball_positions:
-            canvas.paste(S["ball"], (pos[1] * px, pos[0] * px))
+        # ── 4. Objects: keys and balls ─────────────────────────────────────
+        for pos, items in env.objects.items():
+            oi, oj = pos
+            x, y   = top_left(oi, oj)
+            for item in items:
+                if item["type"] == CellType.KEY:
+                    self._blit_at(canvas, self._key_sprite_name(item["color"]), x, y)
+                elif item["type"] == CellType.BALL:
+                    self._blit_at(canvas, "ball", x, y)
 
-        # ── Layer 5: agent ────────────────────────────────────────────────
+        # ── 5. Agent ──────────────────────────────────────────────────────
         ai, aj = env.state
-        canvas.paste(S["agent"], (aj * px, ai * px))
+        x, y   = top_left(ai, aj)
+        self._blit_at(canvas, "agent", x, y)
 
-        # ── Layer 6: start label (S) ──────────────────────────────────────
-        si, sj = start_pos
-        draw.text((sj * px + 4, si * px + 4), "S", fill=(100, 180, 255))
-
-        # ── Layer 7: reward flash (top-right corner) ──────────────────────
+        # ── 6. Step reward overlay (top-right, non-terminal steps only) ────
         if reward != 0.0 and not done:
-            sign  = "+" if reward > 0 else ""
-            color = self._REWARD_POS if reward > 0 else self._REWARD_NEG
-            draw.text((W - 70, 6), f"{sign}{reward:.2f}", fill=color)
+            col  = self.C["reward_pos"] if reward > 0 else self.C["reward_neg"]
+            sign = "+" if reward > 0 else ""
+            cv2_.putText(
+                canvas, f"{sign}{reward:.2f}",
+                (W - 90, pad + 22),
+                FONT, 0.65, col, 2, cv2_.LINE_AA,
+            )
 
-        # ── Layer 8: HUD strip ────────────────────────────────────────────
-        draw.rectangle([(0, H), (W, H + HUD_H)], fill=self._HUD_BG)
-        inv_str = "".join(
-            f"[{it['type'].name[0]}{it['color'].name[0]}]"
-            for it in env.agent_inventory
-        ) or "empty"
-        door_label = door_state.name[:4]
-        draw.text((8, H +  6), f"Step:{step_n:3d}  Rwd:{reward:+.2f}  Total:{total_reward:+.2f}",
-                  fill=self._HUD_TEXT)
-        draw.text((8, H + 30), f"Inv:{inv_str}  Door:{door_label}  Cells:{len(env.visited_cells)}",
-                  fill=self._HUD_TEXT)
+        # ── 7. HUD bar ────────────────────────────────────────────────────
+        hud_y = H - HUD_H
+        cv2_.rectangle(canvas, (0, hud_y), (W, H), self.C["hud_bg"], -1)
 
-        # ── Layer 9: DONE overlay ─────────────────────────────────────────
+        inv_str = (
+            "".join(
+                f"[{it['type'].name[0]}{it['color'].name[0]}]"
+                for it in env.agent_inventory
+            )
+            or "empty"
+        )
+        door_info = next(iter(env.doors.values()))
+        lines = [
+            f"Step:{step_n:3d}  Rwd:{reward:+.2f}  Total:{total_reward:+.2f}",
+            f"Inv:{inv_str}  Door:{door_info['door_state'].name[:4]}  "
+            f"Cells:{len(env.visited_cells)}",
+        ]
+        for li, line in enumerate(lines):
+            cv2_.putText(
+                canvas, line,
+                (pad, hud_y + 18 + li * 20),
+                FONT, 0.42, self.C["hud_text"], 1, cv2_.LINE_AA,
+            )
+
+        # ── 8. "DONE" overlay ─────────────────────────────────────────────
         if done:
-            overlay = Image.new("RGBA", (W, H + HUD_H), (0, 0, 0, 120))
-            canvas  = canvas.convert("RGBA")
-            canvas  = Image.alpha_composite(canvas, overlay).convert("RGB")
-            draw    = ImageDraw.Draw(canvas)
-            draw.text((W // 2 - 28, (H + HUD_H) // 2 - 10), "DONE",
-                      fill=(60, 220, 120))
+            overlay = canvas.copy()
+            cv2_.rectangle(overlay, (0, 0), (W, H), (0, 0, 0), -1)
+            cv2_.addWeighted(overlay, 0.45, canvas, 0.55, 0, canvas)
+            cv2_.putText(
+                canvas, "DONE",
+                (W // 2 - 50, H // 2),
+                FONT, 1.4, (60, 220, 120), 3, cv2_.LINE_AA,
+            )
 
-        return canvas
+        # BGR -> RGB for imageio
+        return cv2_.cvtColor(canvas, cv2_.COLOR_BGR2RGB)
+
+
+
+    def debug_frame(
+        self,
+        step_n: int = 0,
+        reward: float = 0.0,
+        total_reward: float = 0.0,
+        done: bool = False,
+        save_path: str | None = None,
+        show: bool = True,
+        figsize: tuple[int, int] | None = None,
+        label_sprites: bool = False,
+    ) -> np.ndarray:
+        """
+        Render a single frame of the current environment state and display
+        it inline (Jupyter / matplotlib) and/or save it to disk.
+ 
+        Parameters
+        ----------
+        step_n : int
+            Step number shown in the HUD (default 0).
+        reward : float
+            Step reward shown in the HUD (default 0.0).
+        total_reward : float
+            Cumulative reward shown in the HUD (default 0.0).
+        done : bool
+            Whether to render the "DONE" overlay (default False).
+        save_path : str | None
+            If given, write the frame as a PNG to this path.
+        show : bool
+            Display the frame via matplotlib (default True).
+            Set to False when only saving is needed.
+        figsize : (int, int) | None
+            matplotlib figure size in inches.  Defaults to auto-scaling
+            based on the canvas dimensions.
+        label_sprites : bool
+            When True, draw a small sprite-name label on each cell — useful
+            for verifying that the correct wall variant is chosen everywhere.
+ 
+        Returns
+        -------
+        np.ndarray
+            The rendered RGB frame (H × W × 3, uint8).
+
+
+        Usage:
+
+        # Quickest use — show current env state inline in Jupyter
+        recorder.debug_frame()
+        
+        # Save a PNG snapshot without displaying
+        recorder.debug_frame(save_path="debug/step_42.png", show=False)
+        
+        # Check wall-tile assignments across the whole map
+        recorder.debug_frame(label_sprites=True)
+        
+        # Simulate mid-episode state for a specific step
+        recorder.debug_frame(step_n=17, reward=-0.1, total_reward=-1.7)
+        """
+        frame = self._make_frame(step_n, reward, total_reward, done)
+ 
+        # Optional: overlay sprite-name labels for wall-tile debugging
+        if label_sprites:
+            frame = self._label_sprites(frame.copy())
+ 
+        if save_path is not None:
+            os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
+            # imageio expects RGB; cv2.imwrite expects BGR
+            self._cv2.imwrite(save_path, self._cv2.cvtColor(frame, self._cv2.COLOR_RGB2BGR))
+            if self.verbose:
+                print(f"[debug_frame] saved -> {os.path.abspath(save_path)}")
+ 
+        if show:
+            try:
+                import matplotlib.pyplot as plt
+            except ImportError:
+                raise ImportError("matplotlib is required for show=True.  "
+                                  "Install with: pip install matplotlib")
+ 
+            h, w = frame.shape[:2]
+            if figsize is None:
+                # ~96 dpi equivalent so the image isn't microscopic or huge
+                figsize = (max(4, w / 96), max(3, h / 96))
+ 
+            fig, ax = plt.subplots(figsize=figsize)
+            ax.imshow(frame)
+            ax.axis("off")
+            ax.set_title(
+                f"step={step_n}  reward={reward:+.2f}  total={total_reward:+.2f}",
+                fontsize=9, pad=4,
+            )
+            plt.tight_layout(pad=0.5)
+            plt.show()
+ 
+        return frame
+ 
+    def _label_sprites(self, frame: np.ndarray) -> np.ndarray:
+        """
+        Overlay each cell with a tiny white label showing which sprite name
+        was chosen.  Only used when debug_frame(label_sprites=True).
+        """
+        cv2_ = self._cv2
+        env  = self.env
+        px   = self.cell_px
+        pad  = self.padding
+        FONT = cv2_.FONT_HERSHEY_SIMPLEX
+ 
+        # Convert RGB -> BGR for putText, then back
+        bgr = cv2_.cvtColor(frame, cv2_.COLOR_RGB2BGR)
+ 
+        for i in range(env.nrows):
+            for j in range(env.ncols):
+                x = pad + j * px
+                y = pad + i * px
+
+                name, _ = self._wall_sprite_name_and_flip(env, i, j)
+ 
+                # Abbreviate long names so they fit inside a cell
+                short = (name
+                         .replace("cell_", "")
+                         .replace("_wall", "_w")
+                         .replace("_corner", "_c")
+                         .replace("_edge", "_e")
+                         .replace("middle", "mid"))
+ 
+                # Dark shadow then white text for readability on any tile
+                org = (x + 3, y + px - 6)
+                cv2_.putText(bgr, short, org, FONT, 0.28, (0, 0, 0),   2, cv2_.LINE_AA)
+                cv2_.putText(bgr, short, org, FONT, 0.28, (255,255,255), 1, cv2_.LINE_AA)
+ 
+        return cv2_.cvtColor(bgr, cv2_.COLOR_BGR2RGB)
