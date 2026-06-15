@@ -215,10 +215,19 @@ Q-learning is executed for a number of episodes. In each episode, the agent perf
 
 ---
 
+# Bonus Video
+
+<video src="https://github.com/user-attachments/assets/0b6073ec-cd4e-4b1c-8250-e0248592a7b4"  controls></video>
+
+
+---
+
+
 # References
 
 1. Sutton, R. S., & Barto, A. G. (2018). *Reinforcement Learning: An Introduction* (2nd ed.). MIT Press.
 2. Watkins, C. J. C. H. (1989). *Learning from delayed rewards*. PhD thesis, University of Cambridge.
 3. Watkins, C. J. C. H., & Dayan, P. (1992). Q-learning. *Machine Learning*, 8(3–4), 279–292.
+4. [Universal Value Function Approximators (2015) ](http://proceedings.mlr.press/v37/schaul15.pdf)
 
    
