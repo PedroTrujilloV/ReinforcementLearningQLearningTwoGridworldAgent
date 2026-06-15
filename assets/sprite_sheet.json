@@ -1,0 +1,135 @@
+{
+  "sprites": [
+    {
+      "fileName": "agent.png",
+      "width": 99,
+      "height": 99,
+      "x": 39,
+      "y": 37
+    },
+    {
+      "fileName": "ball.png",
+      "width": 99,
+      "height": 99,
+      "x": 216,
+      "y": 37
+    },
+    {
+      "fileName": "cell.png",
+      "width": 99,
+      "height": 99,
+      "x": 393,
+      "y": 37
+    },
+    {
+      "fileName": "cell_bottom_corner.png",
+      "width": 177,
+      "height": 173,
+      "x": 531,
+      "y": 0
+    },
+    {
+      "fileName": "cell_bottom_edge.png",
+      "width": 99,
+      "height": 173,
+      "x": 747,
+      "y": 0
+    },
+    {
+      "fileName": "cell_bottom_wall.png",
+      "width": 99,
+      "height": 173,
+      "x": 39,
+      "y": 173
+    },
+    {
+      "fileName": "cell_middle_wall.png",
+      "width": 99,
+      "height": 99,
+      "x": 216,
+      "y": 210
+    },
+    {
+      "fileName": "cell_side_edge.png",
+      "width": 177,
+      "height": 99,
+      "x": 354,
+      "y": 210
+    },
+    {
+      "fileName": "cell_top_corner.png",
+      "width": 177,
+      "height": 154,
+      "x": 531,
+      "y": 182
+    },
+    {
+      "fileName": "cell_top_edge.png",
+      "width": 99,
+      "height": 154,
+      "x": 747,
+      "y": 182
+    },
+    {
+      "fileName": "cell_top_wall.png",
+      "width": 99,
+      "height": 154,
+      "x": 39,
+      "y": 355
+    },
+    {
+      "fileName": "door.png",
+      "width": 99,
+      "height": 99,
+      "x": 216,
+      "y": 383
+    },
+    {
+      "fileName": "door_open.png",
+      "width": 99,
+      "height": 99,
+      "x": 393,
+      "y": 383
+    },
+    {
+      "fileName": "exit.png",
+      "width": 99,
+      "height": 99,
+      "x": 570,
+      "y": 383
+    },
+    {
+      "fileName": "key_blue.png",
+      "width": 99,
+      "height": 99,
+      "x": 747,
+      "y": 383
+    },
+    {
+      "fileName": "key_green.png",
+      "width": 99,
+      "height": 99,
+      "x": 39,
+      "y": 556
+    },
+    {
+      "fileName": "key_red.png",
+      "width": 99,
+      "height": 99,
+      "x": 216,
+      "y": 556
+    },
+    {
+      "fileName": "key_yellow.png",
+      "width": 99,
+      "height": 99,
+      "x": 393,
+      "y": 556
+    }
+  ],
+  "packMode": "grid",
+  "padding": 0,
+  "backgroundColor": "rgba(0, 0, 0, 0)",
+  "spriteSheetWidth": 885,
+  "spriteSheetHeight": 692
+}
